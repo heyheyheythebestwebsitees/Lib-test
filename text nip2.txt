@@ -1,0 +1,2617 @@
+--[[
+	Prism UI — a from-scratch Roblox menu kit
+
+	One file. Drop it in and call Prism.new() to get a window; every control
+	lives under that window's Page objects. Nothing here depends on the
+	executor besides optional clipboard/toggle helpers.
+
+	Feature set: themed window, sidebar with sections, sub-tabs, grouped
+	controls (toggle / slider / cycle / color / keybind / multiselect / list /
+	button / note / info), search, Simple vs Advanced mode, tooltips, right-
+	click keybind popup, animated selection pill and sub-tab thumb.
+
+	Prism is a UI kit only — it does not read files, does not touch the game.
+]]
+
+-------------------------------------------------------------------------------
+-- §0 header + guards
+-------------------------------------------------------------------------------
+local VERSION = "1.0.0"
+local PUBLIC_VERSION = "1.0"
+
+-- Check for table that is shared between executions.
+if not shared then
+	return warn("No shared, no script.")
+end
+
+-- Initialize Luraph globals if they do not exist.
+loadstring("getfenv().LPH_NO_VIRTUALIZE = function(...) return ... end")()
+
+getfenv().PP_SCRAMBLE_NUM = function(...)
+	return ...
+end
+getfenv().PP_SCRAMBLE_STR = function(...)
+	return ...
+end
+getfenv().PP_SCRAMBLE_RE_NUM = function(...)
+	return ...
+end
+
+-------------------------------------------------------------------------------
+-- §1 module table
+-------------------------------------------------------------------------------
+local Prism = {
+	version = VERSION,
+	publicVersion = PUBLIC_VERSION,
+	pages = {},
+	tabButtons = {},
+	subTabs = {},
+	rows = {},
+	groups = {},
+	sync = {},
+	bindTags = {},
+	conns = {},
+	activeTab = "",
+	searchText = "",
+}
+Prism.__index = Prism
+
+-------------------------------------------------------------------------------
+-- §2 services
+-------------------------------------------------------------------------------
+-- Services.
+local playersService = game:GetService("Players")
+local runService = game:GetService("RunService")
+local userInputService = game:GetService("UserInputService")
+local tweenService = game:GetService("TweenService")
+local lightingService = game:GetService("Lighting")
+local guiService = game:GetService("GuiService")
+local textService = game:GetService("TextService")
+local httpService = game:GetService("HttpService")
+
+local localPlayer = playersService.LocalPlayer
+
+-------------------------------------------------------------------------------
+-- §3 theme
+-------------------------------------------------------------------------------
+-- Palette constants.
+local COLORS = {
+	bg = Color3.fromRGB(16, 20, 24),
+	side = Color3.fromRGB(11, 14, 17),
+	surface = Color3.fromRGB(24, 29, 34),
+	card = Color3.fromRGB(30, 36, 42),
+	pop = Color3.fromRGB(21, 26, 31),
+	hairline = Color3.fromRGB(32, 38, 44),
+	edge = Color3.fromRGB(40, 47, 54),
+	text = Color3.fromRGB(232, 236, 240),
+	dim = Color3.fromRGB(158, 168, 178),
+	muted = Color3.fromRGB(104, 114, 124),
+	faint = Color3.fromRGB(72, 80, 90),
+	off = Color3.fromRGB(38, 45, 52),
+	knobOff = Color3.fromRGB(120, 128, 138),
+	accent = Color3.fromRGB(56, 214, 214),
+	accent2 = Color3.fromRGB(22, 148, 156),
+	danger = Color3.fromRGB(255, 92, 122),
+	ok = Color3.fromRGB(74, 214, 148),
+	warn = Color3.fromRGB(255, 178, 84),
+	rage = Color3.fromRGB(255, 92, 122),
+	outline = Color3.new(0, 0, 0),
+}
+Prism.C = COLORS
+
+-- Fonts.
+local FONT = {
+	body = Font.fromEnum(Enum.Font.BuilderSans),
+	medium = Font.fromEnum(Enum.Font.BuilderSansMedium),
+	semibold = Font.fromEnum(Enum.Font.BuilderSansBold),
+	bold = Font.fromEnum(Enum.Font.BuilderSansExtraBold),
+	code = Font.fromEnum(Enum.Font.RobotoMono),
+}
+Prism.F = FONT
+
+-- Metrics constants (scaled by Prism.px at layout time).
+local M = {
+	title = 14, desc = 13, group = 14, value = 13, small = 12, tiny = 11,
+	row = 26, rowButton = 32, rowNote = 20, listRow = 26,
+	pillW = 28, pillH = 16, knob = 12,
+	ctrlW = 120, trackW = 100, valueW = 40,
+}
+Prism.M = M
+
+-- Motion constants.
+local TW = {
+	open = TweenInfo.new(0.30, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+	close = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+	tab = TweenInfo.new(0.34, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+	toggle = TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+	knob = TweenInfo.new(0.20, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out),
+	hover = TweenInfo.new(0.16, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out),
+	toastIn = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+	pop = TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+	reveal = TweenInfo.new(0.28, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out),
+	lead = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+	trail = TweenInfo.new(0.40, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+}
+Prism.TW = TW
+
+-------------------------------------------------------------------------------
+-- §4 low-level builders
+-------------------------------------------------------------------------------
+local function tween(obj, info, props)
+	local t = tweenService:Create(obj, info, props)
+	t:Play()
+	return t
+end
+Prism.tween = tween
+
+local order = 0
+local function nextOrder()
+	order += 1
+	return order
+end
+Prism.nextOrder = nextOrder
+
+local function corner(parent, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius)
+	c.Parent = parent
+	return c
+end
+
+local function stroke(parent, color, transparency, thickness)
+	local s = Instance.new("UIStroke")
+	s.Color = color or COLORS.edge
+	s.Thickness = thickness or 1
+	s.Transparency = transparency or 0
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.LineJoinMode = Enum.LineJoinMode.Round
+	s.Parent = parent
+	return s
+end
+
+local function gradient(parent, c1, c2, rotation)
+	local g = Instance.new("UIGradient")
+	g.Color = ColorSequence.new(c1, c2)
+	g.Rotation = rotation or 0
+	g.Parent = parent
+	return g
+end
+
+local function vlist(parent, pad, horizontal)
+	local l = Instance.new("UIListLayout")
+	l.SortOrder = Enum.SortOrder.LayoutOrder
+	l.Padding = UDim.new(0, pad or 0)
+	if horizontal then
+		l.FillDirection = Enum.FillDirection.Horizontal
+	end
+	l.Parent = parent
+	return l
+end
+
+local function padding(parent, t, r, b, l)
+	local u = Instance.new("UIPadding")
+	u.PaddingTop = UDim.new(0, t or 0)
+	u.PaddingRight = UDim.new(0, r or 0)
+	u.PaddingBottom = UDim.new(0, b or 0)
+	u.PaddingLeft = UDim.new(0, l or 0)
+	u.Parent = parent
+	return u
+end
+
+local function setFont(label, font)
+	if typeof(font) == "Font" then
+		label.FontFace = font
+	elseif typeof(font) == "EnumItem" then
+		label.Font = font
+	else
+		label.FontFace = FONT.body
+	end
+end
+
+local function label(parent, text, size, color, font)
+	local t = Instance.new("TextLabel")
+	t.BackgroundTransparency = 1
+	setFont(t, font or FONT.body)
+	t.TextSize = size or M.title
+	t.TextColor3 = color or COLORS.text
+	t.TextXAlignment = Enum.TextXAlignment.Left
+	t.Text = text or ""
+	t.Parent = parent
+	return t
+end
+
+local function frame(parent, bg)
+	local f = Instance.new("Frame")
+	f.BorderSizePixel = 0
+	if bg then
+		f.BackgroundColor3 = bg
+	else
+		f.BackgroundTransparency = 1
+	end
+	if parent then
+		f.Parent = parent
+	end
+	return f
+end
+
+local function button(parent, text, size, color, bg)
+	local b = Instance.new("TextButton")
+	b.BackgroundColor3 = bg or COLORS.surface
+	b.BorderSizePixel = 0
+	setFont(b, FONT.medium)
+	b.TextSize = size or M.value
+	b.TextColor3 = color or COLORS.dim
+	b.Text = text or ""
+	b.AutoButtonColor = false
+	b.Parent = parent
+	return b
+end
+
+Prism.corner = corner
+Prism.stroke = stroke
+Prism.gradient = gradient
+Prism.vlist = vlist
+Prism.padding = padding
+Prism.label = label
+Prism.frame = frame
+Prism.button = button
+Prism.setFont = setFont
+
+-------------------------------------------------------------------------------
+-- §5 helpers
+-------------------------------------------------------------------------------
+local function hex(c)
+	return ("#%02x%02x%02x"):format(
+		math.floor(c.R * 255 + 0.5),
+		math.floor(c.G * 255 + 0.5),
+		math.floor(c.B * 255 + 0.5)
+	)
+end
+Prism.hex = hex
+
+local function textWidth(text, size, font)
+	local ok, bounds = pcall(textService.GetTextSize, textService, tostring(text or ""), size or M.value, font or Enum.Font.BuilderSansBold, Vector2.new(2000, 200))
+	if ok and bounds then
+		return math.ceil(bounds.X)
+	end
+	return #tostring(text or "") * (size or M.value) * 0.6
+end
+Prism.textWidth = textWidth
+
+-- wrapped-text height for a given width
+local function textHeight(text, size, width)
+	local ok, bounds = pcall(textService.GetTextSize, textService, tostring(text or ""), size or M.desc, Enum.Font.BuilderSans, Vector2.new(math.max(width, 40), 4000))
+	if ok and bounds then
+		return math.ceil(bounds.Y)
+	end
+	return size or M.desc
+end
+Prism.textHeight = textHeight
+
+-- round a number to a step, stripping float dust
+local function roundToStep(value, step)
+	if not step or step <= 0 then
+		return value
+	end
+	local digits = math.max(0, math.ceil(-math.log10(step)))
+	local pow = 10 ^ digits
+	return math.floor(value / step + 0.5) * step
+end
+
+-- parse a typed slider value ("0.3", "x0.3", "15k", "20%", "off")
+local function parseNumber(input)
+	if type(input) ~= "string" then
+		return nil
+	end
+	local s = string.gsub(string.lower(string.gsub(input, "×", "")), "%s+", "")
+	s = if string.match(s, "^%-?%d+,%d%d%d") then string.gsub(s, ",", "") else string.gsub(s, ",", ".")
+	if s == "off" or s == "none" or s == "never" then
+		return 0
+	end
+	local num, suffix = string.match(s, "^x?([%-]?%d*%.?%d+)(%a*)")
+	local n = tonumber(num)
+	if n == nil or n ~= n then
+		return nil
+	end
+	if suffix == "k" then
+		n *= 1000
+	end
+	return n
+end
+Prism.parseNumber = parseNumber
+
+-- clip a value to [lo, hi]
+local function clamp(v, lo, hi)
+	return math.clamp(v, lo, hi)
+end
+
+-------------------------------------------------------------------------------
+-- §6 animated liquid indicator
+-------------------------------------------------------------------------------
+-- a moving pill whose two edges ride NumberValues; `apply(a, b)` paints it
+function Prism.liquid(holder, apply)
+	local L = { tw = {}, placed = false }
+	L.a = Instance.new("NumberValue")
+	L.b = Instance.new("NumberValue")
+	L.a.Parent = holder
+	L.b.Parent = holder
+
+	local function paint()
+		apply(L.a.Value, L.b.Value)
+	end
+	L.a.Changed:Connect(paint)
+	L.b.Changed:Connect(paint)
+
+	function L.to(a, b, animate)
+		for _, t in ipairs(L.tw) do
+			t:Cancel()
+		end
+		table.clear(L.tw)
+		if not animate or not L.placed then
+			L.placed = true
+			L.a.Value = a
+			L.b.Value = b
+			paint()
+			return
+		end
+		local forward = a > L.a.Value
+		table.insert(L.tw, tween(L.a, if forward then TW.trail else TW.lead, { Value = a }))
+		table.insert(L.tw, tween(L.b, if forward then TW.lead else TW.trail, { Value = b }))
+	end
+	return L
+end
+
+-------------------------------------------------------------------------------
+-- §7 drag manager
+-------------------------------------------------------------------------------
+Prism.drag = nil
+Prism.dragInstalled = false
+
+function Prism.beginDrag(onMove, onEnd)
+	local prev = Prism.drag
+	if prev and prev.onEnd then
+		pcall(prev.onEnd)
+	end
+	Prism.drag = { onMove = onMove, onEnd = onEnd }
+	if not Prism.dragInstalled then
+		Prism.dragInstalled = true
+		Prism.conn(userInputService.InputChanged:Connect(function(input)
+			local d = Prism.drag
+			if d and input.UserInputType == Enum.UserInputType.MouseMovement then
+				d.onMove(Vector2.new(input.Position.X, input.Position.Y))
+			end
+		end))
+		Prism.conn(userInputService.InputEnded:Connect(function(input)
+			local d = Prism.drag
+			if d and input.UserInputType == Enum.UserInputType.MouseButton1 then
+				Prism.drag = nil
+				if d.onEnd then
+					d.onEnd()
+				end
+			end
+		end))
+	end
+end
+
+function Prism.conn(connection)
+	table.insert(Prism.conns, connection)
+	return connection
+end
+
+-------------------------------------------------------------------------------
+-- §8 group + controls
+-------------------------------------------------------------------------------
+-- a group is a titled card with a hairline header
+function Prism.group(parent, title, options)
+	options = options or {}
+	local groupFrame = frame(parent)
+	groupFrame.Name = "Group_" .. tostring(title)
+	groupFrame.AutomaticSize = Enum.AutomaticSize.Y
+	groupFrame.Size = UDim2.new(1, 0, 0, 0)
+	groupFrame.LayoutOrder = nextOrder()
+	vlist(groupFrame, 0)
+	padding(groupFrame, 0, 0, 14, 0)
+
+	local card = frame(groupFrame, COLORS.surface:Lerp(COLORS.bg, 0.5))
+	card.Name = "Card"
+	card.AutomaticSize = Enum.AutomaticSize.Y
+	card.Size = UDim2.new(1, 0, 0, 0)
+	corner(card, 10)
+	stroke(card, COLORS.hairline, 0)
+	vlist(card, 0)
+	padding(card, 0, 12, 8, 12)
+
+	local head = frame(card)
+	head.Name = "Head"
+	head.Size = UDim2.new(1, 0, 0, 30)
+	head.LayoutOrder = nextOrder()
+	local titleLabel = label(head, string.lower(title), M.small + 1, COLORS.dim, FONT.semibold)
+	titleLabel.Size = UDim2.new(1, 0, 1, 0)
+	local hairline = frame(head, COLORS.hairline)
+	hairline.Size = UDim2.new(1, 24, 0, 1)
+	hairline.Position = UDim2.new(0, -12, 1, -1)
+	local gap = frame(card)
+	gap.Size = UDim2.new(1, 0, 0, 4)
+	gap.LayoutOrder = nextOrder()
+
+	local g = {
+		frame = groupFrame,
+		rows = {},
+		title = title,
+		advanced = options.advanced == true,
+		simple = options.simple == true,
+	}
+	table.insert(Prism.groups, g)
+
+	-- a bare row with an optional label and desc; sub-options parent into the group's current sub state
+	local function row(height, text, rowOpts)
+		rowOpts = rowOpts or {}
+		local r = frame(card)
+		r.Size = UDim2.new(1, 0, 0, height)
+		r.LayoutOrder = nextOrder()
+		local entry = {
+			frame = r,
+			text = string.lower(tostring(text or "")),
+			desc = rowOpts.desc,
+			advanced = if rowOpts.advanced ~= nil then rowOpts.advanced else g.advanced,
+			base = height,
+			isNote = rowOpts.isNote == true,
+		}
+		if g.subParent then
+			entry.parent = g.subParent
+			entry.advanced = false
+			local pad = Instance.new("UIPadding")
+			pad.PaddingLeft = UDim.new(0, 16)
+			pad.Parent = r
+			local rail = frame(r, COLORS.hairline)
+			rail.Name = "SubRail"
+			rail.Size = UDim2.new(0, 1, 1, -6)
+			rail.Position = UDim2.new(0, -10, 0, 3)
+			r.Visible = false
+		end
+		table.insert(Prism.rows, entry)
+		table.insert(g.rows, entry)
+		return r
+	end
+	g.row = row
+
+	-- the row's label plus a help icon whose tooltip carries the description
+	local function rowLabel(r, text, rowOpts, reserve)
+		local l = label(r, string.lower(text), M.title, COLORS.text, FONT.body)
+		l.Name = "Label"
+		l.Size = UDim2.new(1, -((reserve or 0) + 24), 1, 0)
+		l.TextTruncate = Enum.TextTruncate.AtEnd
+		local helpText = if type(rowOpts.desc) == "string" and rowOpts.desc ~= "" then rowOpts.desc else nil
+		if helpText then
+			local hint = frame(r)
+			hint.Name = "Hint"
+			hint.Size = UDim2.fromOffset(16, 16)
+			hint.AnchorPoint = Vector2.new(0, 0.5)
+			hint.Position = UDim2.new(0, 0, 0.5, 0)
+			local ic = label(hint, "?", M.small, COLORS.faint, FONT.semibold)
+			ic.Size = UDim2.fromScale(1, 1)
+			ic.TextXAlignment = Enum.TextXAlignment.Center
+			local function place()
+				hint.Position = UDim2.new(0, math.floor(l.TextBounds.X) + 6, 0.5, 0)
+			end
+			place()
+			l:GetPropertyChangedSignal("TextBounds"):Connect(place)
+			Prism.tip(hint, helpText)
+			Prism.tip(l, helpText)
+		end
+		return l
+	end
+	g.rowLabel = rowLabel
+
+	-- ── toggle ─────────────────────────────────────────────────────────────
+	function g.toggle(_, text, key, toggleOpts)
+		toggleOpts = toggleOpts or {}
+		toggleOpts.key = key
+		local r = row(M.row, text, toggleOpts)
+		local l = rowLabel(r, text, toggleOpts, M.pillW + 8)
+
+		-- the switch is a rounded track with a knob that slides on/off
+		local pill = button(r, "", 10, COLORS.text, COLORS.off)
+		pill.Name = "Switch"
+		pill.BackgroundTransparency = 1
+		pill.Size = UDim2.new(0, M.pillW, 0, M.pillH)
+		pill.AnchorPoint = Vector2.new(1, 0.5)
+		pill.Position = UDim2.new(1, 0, 0.5, 0)
+
+		local track = frame(pill, COLORS.off)
+		track.Size = UDim2.fromScale(1, 1)
+		corner(track, M.pillH // 2)
+
+		local fill = frame(pill, Color3.new(1, 1, 1))
+		fill.Size = UDim2.fromScale(1, 1)
+		fill.BackgroundTransparency = 1
+		corner(fill, M.pillH // 2)
+		gradient(fill, COLORS.accent2, COLORS.accent)
+
+		local knob = frame(pill, COLORS.knobOff)
+		knob.Size = UDim2.new(0, M.knob, 0, M.knob)
+		knob.AnchorPoint = Vector2.new(0, 0.5)
+		knob.Position = UDim2.new(0, 2, 0.5, 0)
+		corner(knob, M.knob // 2)
+
+		local bindTag = label(r, "", M.small, COLORS.muted, FONT.medium)
+		bindTag.Name = "Bind"
+		bindTag.Size = UDim2.new(0, 30, 0, 18)
+		bindTag.AnchorPoint = Vector2.new(1, 0.5)
+		bindTag.Position = UDim2.new(1, -(M.pillW + 8), 0.5, 0)
+		bindTag.BackgroundColor3 = COLORS.side
+		bindTag.BackgroundTransparency = 0
+		bindTag.TextXAlignment = Enum.TextXAlignment.Center
+		bindTag.Visible = false
+		corner(bindTag, 4)
+		stroke(bindTag, COLORS.edge, 0)
+
+		local lastShown = nil
+		local function refresh(animate)
+			local on = toggleOpts.state and toggleOpts.state() or false
+			lastShown = on
+			local knobGoal = if on then UDim2.new(1, -(M.knob + 2), 0.5, 0) else UDim2.new(0, 2, 0.5, 0)
+			if animate then
+				tween(knob, TW.toggle, { Position = knobGoal, BackgroundColor3 = if on then Color3.new(1, 1, 1) else COLORS.knobOff })
+				tween(fill, TW.toggle, { BackgroundTransparency = if on then 0 else 1 })
+				tween(l, TW.toggle, { TextColor3 = if on then COLORS.text else COLORS.dim })
+			else
+				knob.Position = knobGoal
+				knob.BackgroundColor3 = if on then Color3.new(1, 1, 1) else COLORS.knobOff
+				fill.BackgroundTransparency = if on then 0 else 1
+				l.TextColor3 = if on then COLORS.text else COLORS.dim
+			end
+		end
+		refresh(false)
+
+		table.insert(Prism.sync, function()
+			local on = toggleOpts.state and toggleOpts.state() or false
+			if on ~= lastShown then
+				refresh(true)
+			end
+		end)
+
+		local function refreshBind()
+			local b = Prism.binds and Prism.binds[key]
+			if type(b) == "table" and ((b.key and b.key ~= "") or b.mode == "Always" or b.mode == "Never") then
+				local mode = b.mode or "Toggle"
+				bindTag.Text = if mode == "Toggle" then Prism.keyLabel(b.key) elseif mode == "Hold" then Prism.keyLabel(b.key) .. " hold" else string.lower(mode)
+				bindTag.Size = UDim2.new(0, math.max(24, textWidth(bindTag.Text, M.small) + 14), 0, 18)
+				bindTag.Visible = true
+			else
+				bindTag.Text = ""
+				bindTag.Visible = false
+			end
+		end
+		refreshBind()
+		Prism.bindTags[key] = refreshBind
+
+		pill.MouseEnter:Connect(function()
+			tween(knob, TW.hover, { BackgroundColor3 = if (toggleOpts.state and toggleOpts.state()) then Color3.new(1, 1, 1) else COLORS.dim })
+		end)
+		pill.MouseLeave:Connect(function()
+			refresh(false)
+		end)
+
+		pill.MouseButton1Click:Connect(function()
+			if toggleOpts.onChange then
+				toggleOpts.onChange(not (toggleOpts.state and toggleOpts.state() or false))
+			end
+			refresh(true)
+		end)
+
+		-- right-click → keybind popup
+		r.Active = true
+		local function onRightClick(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton2 then
+				Prism.openBindPopup(key, text, userInputService:GetMouseLocation())
+			end
+		end
+		r.InputBegan:Connect(onRightClick)
+		pill.InputBegan:Connect(onRightClick)
+
+		-- sub-options: rows that only show while this toggle's three-line button is open
+		local subState = nil
+		local expandBtn = nil
+		if type(toggleOpts.sub) == "function" then
+			subState = { open = false, when = toggleOpts.subWhen }
+			local eb = button(r, "", M.small, COLORS.text, COLORS.card)
+			eb.Name = "Expand"
+			eb.BackgroundTransparency = 1
+			eb.Size = UDim2.fromOffset(20, 20)
+			eb.AnchorPoint = Vector2.new(1, 0.5)
+			eb.Position = UDim2.new(1, -(M.pillW + 12), 0.5, 0)
+			corner(eb, 5)
+			local ebLabel = label(eb, "≡", M.title, COLORS.muted, FONT.semibold)
+			ebLabel.Size = UDim2.fromScale(1, 1)
+			ebLabel.TextXAlignment = Enum.TextXAlignment.Center
+			expandBtn = eb
+			Prism.tip(eb, "More options for " .. tostring(text))
+
+			local prevParent = g.subParent
+			g.subParent = subState
+			local okSub, errSub = pcall(toggleOpts.sub, g)
+			g.subParent = prevParent
+			if not okSub then
+				warn("prism: sub-options of " .. tostring(text) .. " failed: " .. tostring(errSub))
+			end
+
+			eb.MouseButton1Click:Connect(function()
+				local opening = not subState.open
+				if opening then
+					subState.open = true
+					ebLabel.TextColor3 = COLORS.accent
+				else
+					subState.open = false
+					ebLabel.TextColor3 = COLORS.muted
+				end
+				Prism.refilter()
+			end)
+		end
+
+		return r
+	end
+
+	-- ── slider ─────────────────────────────────────────────────────────────
+	function g.slider(_, text, key, min, max, step, sliderOpts)
+		sliderOpts = sliderOpts or {}
+		sliderOpts.key = key
+		local r = row(M.row, text, sliderOpts)
+		local trackW = sliderOpts.trackW or M.trackW
+		rowLabel(r, text, sliderOpts, trackW + 10 + M.valueW)
+
+		local valueBtn = button(r, "", M.value, COLORS.text, COLORS.surface)
+		valueBtn.Name = "Value"
+		valueBtn.BackgroundTransparency = 1
+		valueBtn.Size = UDim2.new(0, M.valueW, 1, 0)
+		valueBtn.AnchorPoint = Vector2.new(1, 0)
+		valueBtn.Position = UDim2.new(1, 0, 0, 0)
+		valueBtn.TextXAlignment = Enum.TextXAlignment.Right
+
+		local rail = button(r, "", 10, COLORS.text, COLORS.off)
+		rail.Name = "Rail"
+		rail.BackgroundTransparency = 1
+		rail.Size = UDim2.new(0, trackW, 0, 16)
+		rail.AnchorPoint = Vector2.new(1, 0.5)
+		rail.Position = UDim2.new(1, -(M.valueW + 10), 0.5, 0)
+
+		local track = frame(rail, COLORS.off)
+		track.Size = UDim2.new(1, 0, 0, 4)
+		track.AnchorPoint = Vector2.new(0, 0.5)
+		track.Position = UDim2.new(0, 0, 0.5, 0)
+		corner(track, 2)
+
+		local fill = frame(track, Color3.new(1, 1, 1))
+		fill.Size = UDim2.new(0, 0, 1, 0)
+		corner(fill, 2)
+		gradient(fill, COLORS.accent2, COLORS.accent)
+
+		local knob = frame(track, Color3.new(1, 1, 1))
+		knob.Size = UDim2.new(0, 10, 0, 10)
+		knob.AnchorPoint = Vector2.new(0.5, 0.5)
+		knob.Position = UDim2.new(0, 0, 0.5, 0)
+		corner(knob, 5)
+		local ring = stroke(knob, COLORS.accent, 1, 2)
+
+		local function fmt(n)
+			if sliderOpts.fmt then
+				return sliderOpts.fmt(n)
+			end
+			return tostring(math.floor(n * 100 + 0.5) / 100)
+		end
+		local unit = if type(sliderOpts.unit) == "string" and sliderOpts.unit ~= "" then sliderOpts.unit else nil
+		local shownText = ""
+
+		local function refresh(animateKnob)
+			local n = tonumber(sliderOpts.state and sliderOpts.state() or min) or min
+			local rel = clamp((n - min) / math.max(max - min, 1e-6), 0, 1)
+			local kp = UDim2.new(rel, 0, 0.5, 0)
+			if animateKnob then
+				tween(knob, TW.knob, { Position = kp })
+				tween(fill, TW.knob, { Size = UDim2.new(rel, 0, 1, 0) })
+			else
+				knob.Position = kp
+				fill.Size = UDim2.new(rel, 0, 1, 0)
+			end
+			shownText = fmt(n)
+			valueBtn.Text = if unit then shownText .. " " .. unit else shownText
+		end
+
+		local function setRing(on)
+			tween(ring, TW.hover, { Transparency = if on then 0.7 else 1 })
+		end
+
+		rail.MouseEnter:Connect(function()
+			setRing(true)
+		end)
+		rail.MouseLeave:Connect(function()
+			if not (Prism.drag and Prism.drag.owner == rail) then
+				setRing(false)
+			end
+		end)
+
+		local function setFromX(x, dragging)
+			local rel = clamp((x - rail.AbsolutePosition.X) / math.max(rail.AbsoluteSize.X, 1), 0, 1)
+			local raw = min + (max - min) * rel
+			local n = clamp(roundToStep(raw, step), min, max)
+			if sliderOpts.onChange then
+				sliderOpts.onChange(n)
+			end
+			refresh(not dragging)
+		end
+
+		refresh(false)
+		table.insert(Prism.sync, function()
+			local n = tonumber(sliderOpts.state and sliderOpts.state() or min) or min
+			if fmt(n) ~= shownText then
+				refresh(true)
+			end
+		end)
+
+		rail.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				setFromX(input.Position.X, true)
+				setRing(true)
+				Prism.beginDrag(function(pos)
+					setFromX(pos.X, true)
+				end, function()
+					setRing(false)
+					refresh(true)
+				end)
+				if Prism.drag then
+					Prism.drag.owner = rail
+				end
+			end
+		end)
+
+		-- click the number → type a value
+		local editing = false
+		valueBtn.MouseButton1Click:Connect(function()
+			if editing then
+				return
+			end
+			editing = true
+			local box = Instance.new("TextBox")
+			box.Size = UDim2.new(0, math.max(M.valueW + 26, 68), 0, 22)
+			box.AnchorPoint = Vector2.new(1, 0.5)
+			box.Position = UDim2.new(1, 2, 0.5, 0)
+			box.BackgroundColor3 = COLORS.surface
+			box.BorderSizePixel = 0
+			setFont(box, FONT.medium)
+			box.TextSize = M.value
+			box.TextColor3 = COLORS.text
+			box.Text = tostring(tonumber(sliderOpts.state and sliderOpts.state() or min) or min)
+			box.ClearTextOnFocus = false
+			box.TextXAlignment = Enum.TextXAlignment.Right
+			box.ZIndex = 5
+			box.Parent = r
+			corner(box, 5)
+			stroke(box, COLORS.accent, 0.2)
+			padding(box, 0, 6, 0, 6)
+			box:CaptureFocus()
+			box.FocusLost:Connect(function(enterPressed)
+				editing = false
+				local n = if enterPressed then parseNumber(box.Text) else nil
+				box:Destroy()
+				if n == nil then
+					return
+				end
+				n = clamp(roundToStep(n, step), min, max)
+				if sliderOpts.onChange then
+					sliderOpts.onChange(n)
+				end
+				refresh(true)
+			end)
+		end)
+
+		return r
+	end
+
+	-- ── cycle (dropdown) ───────────────────────────────────────────────────
+	function g.cycle(_, text, key, options, cycleOpts)
+		cycleOpts = cycleOpts or {}
+		cycleOpts.key = key
+		local r = row(M.row, text, cycleOpts)
+		rowLabel(r, text, cycleOpts, M.ctrlW)
+
+		local b = button(r, "", M.value, COLORS.text, COLORS.surface)
+		b.Name = "Dropdown"
+		b.Size = UDim2.new(0, M.ctrlW, 0, 22)
+		b.AnchorPoint = Vector2.new(1, 0.5)
+		b.Position = UDim2.new(1, 0, 0.5, 0)
+		corner(b, 5)
+		local bs = stroke(b, COLORS.edge, 0)
+
+		local val = label(b, "", M.value, COLORS.text, FONT.body)
+		val.Size = UDim2.new(1, -30, 1, 0)
+		val.Position = UDim2.fromOffset(9, 0)
+		val.TextTruncate = Enum.TextTruncate.AtEnd
+
+		local chev = label(b, "▾", M.value, COLORS.muted, FONT.medium)
+		chev.Size = UDim2.fromOffset(20, 22)
+		chev.AnchorPoint = Vector2.new(1, 0.5)
+		chev.Position = UDim2.new(1, -4, 0.5, 0)
+		chev.TextXAlignment = Enum.TextXAlignment.Center
+
+		local function shownOf(v)
+			if cycleOpts.fmt then
+				return string.lower(tostring(cycleOpts.fmt(v)))
+			end
+			return string.lower(tostring(v))
+		end
+
+		local function refresh()
+			val.Text = shownOf(cycleOpts.state and cycleOpts.state() or options[1])
+		end
+		refresh()
+		table.insert(Prism.sync, refresh)
+
+		b.MouseEnter:Connect(function()
+			b.BackgroundColor3 = COLORS.card
+		end)
+		b.MouseLeave:Connect(function()
+			b.BackgroundColor3 = COLORS.surface
+		end)
+
+		b.MouseButton1Click:Connect(function()
+			bs.Color = COLORS.accent
+			Prism.openDropdown(b, M.ctrlW, function(dropFrame)
+				for i, opt in ipairs(options) do
+					local selected = (cycleOpts.state and cycleOpts.state()) == opt
+					Prism.dropdownOption(dropFrame, 4 + (i - 1) * 24, shownOf(opt), selected, function()
+						if cycleOpts.onChange then
+							cycleOpts.onChange(opt)
+						end
+						refresh()
+						Prism.closeDropdown()
+					end)
+				end
+				return 8 + #options * 24
+			end, function()
+				bs.Color = COLORS.edge
+			end)
+		end)
+
+		return r
+	end
+
+	-- ── keybind ────────────────────────────────────────────────────────────
+	function g.keybind(_, text, key, keyOpts)
+		keyOpts = keyOpts or {}
+		keyOpts.key = key
+		local r = row(M.row, text, keyOpts)
+		rowLabel(r, text, keyOpts, 90)
+
+		local b = button(r, "", M.small, COLORS.dim, COLORS.side)
+		b.Name = "Key"
+		b.AutomaticSize = Enum.AutomaticSize.X
+		b.Size = UDim2.new(0, 34, 0, 20)
+		b.AnchorPoint = Vector2.new(1, 0.5)
+		b.Position = UDim2.new(1, 0, 0.5, 0)
+		setFont(b, FONT.semibold)
+		corner(b, 4)
+		local ks = stroke(b, COLORS.edge, 0)
+		padding(b, 0, 8, 0, 8)
+
+		local function show()
+			b.Text = Prism.keyLabel(keyOpts.state and keyOpts.state() or "")
+		end
+		show()
+		table.insert(Prism.sync, show)
+
+		b.MouseButton1Click:Connect(function()
+			b.Text = "press…"
+			Prism.captureKey(function(name)
+				if name ~= false then
+					if keyOpts.onChange then
+						keyOpts.onChange(name or "")
+					end
+				end
+				show()
+			end)
+		end)
+
+		return r
+	end
+
+	-- ── button ─────────────────────────────────────────────────────────────
+	function g.button(_, text, fn, tint, buttonOpts)
+		buttonOpts = buttonOpts or {}
+		local r = row(M.rowButton, text, buttonOpts)
+		local base = tint or COLORS.surface
+		local b = button(r, string.lower(text), M.value, tint or COLORS.dim, base)
+		b.Size = UDim2.new(1, 0, 0, 26)
+		b.AnchorPoint = Vector2.new(0, 0.5)
+		b.Position = UDim2.new(0, 0, 0.5, 0)
+		b.BackgroundTransparency = if tint then 0.86 else 0
+		b.TextTruncate = Enum.TextTruncate.AtEnd
+		corner(b, 6)
+		local bs = stroke(b, tint or COLORS.edge, if tint then 0.6 else 0)
+
+		b.MouseEnter:Connect(function()
+			if tint then
+				tween(b, TW.hover, { BackgroundTransparency = 0.78 })
+			else
+				tween(b, TW.hover, { BackgroundColor3 = COLORS.card, TextColor3 = COLORS.text })
+			end
+		end)
+		b.MouseLeave:Connect(function()
+			if tint then
+				tween(b, TW.hover, { BackgroundTransparency = 0.86 })
+			else
+				tween(b, TW.hover, { BackgroundColor3 = COLORS.surface, TextColor3 = COLORS.dim })
+			end
+		end)
+		b.MouseButton1Down:Connect(function()
+			b.Position = UDim2.new(0, 0, 0.5, 1)
+			bs.Transparency = 0
+		end)
+		b.MouseButton1Up:Connect(function()
+			b.Position = UDim2.new(0, 0, 0.5, 0)
+			bs.Transparency = if tint then 0.6 else 0
+		end)
+		b.MouseButton1Click:Connect(function()
+			local ok, err = pcall(fn)
+			if not ok then
+				warn("prism button " .. tostring(text) .. ": " .. tostring(err))
+			end
+		end)
+
+		if type(buttonOpts.desc) == "string" and buttonOpts.desc ~= "" then
+			Prism.tip(b, buttonOpts.desc)
+		end
+		return b
+	end
+
+	-- ── note ───────────────────────────────────────────────────────────────
+	function g.note(_, text, noteOpts)
+		noteOpts = noteOpts or {}
+		noteOpts.isNote = true
+		local width = Prism.columnWidth or 320
+		local minH = if text ~= "" then textHeight(text, M.desc, width) + 8 else 18
+		local r = row(minH, text, noteOpts)
+		r.AutomaticSize = Enum.AutomaticSize.Y
+		local l = label(r, text, M.desc, noteOpts.color or COLORS.muted, FONT.body)
+		l.Size = UDim2.new(1, 0, 0, 0)
+		l.Position = UDim2.new(0, 0, 0, 3)
+		l.AutomaticSize = Enum.AutomaticSize.Y
+		l.TextWrapped = true
+		l.TextYAlignment = Enum.TextYAlignment.Top
+		return l
+	end
+
+	-- ── info (live read-only row) ──────────────────────────────────────────
+	function g.info(_, text, getter, infoOpts)
+		infoOpts = infoOpts or {}
+		local r = row(M.row, text, infoOpts)
+		local l = label(r, string.lower(text), M.title, COLORS.dim, FONT.body)
+		l.Size = UDim2.new(0.45, 0, 1, 0)
+		l.TextTruncate = Enum.TextTruncate.AtEnd
+		local v = label(r, "", M.value, COLORS.text, FONT.medium)
+		v.Size = UDim2.new(0.55, 0, 1, 0)
+		v.Position = UDim2.new(0.45, 0, 0, 0)
+		v.TextXAlignment = Enum.TextXAlignment.Right
+		v.TextTruncate = Enum.TextTruncate.AtEnd
+
+		local function refresh()
+			local ok, s = pcall(getter)
+			local txt = if ok and s ~= nil then tostring(s) else "—"
+			if v.Text ~= txt then
+				v.Text = txt
+			end
+		end
+		refresh()
+		table.insert(Prism.sync, refresh)
+		return v
+	end
+
+	-- ── multiselect ────────────────────────────────────────────────────────
+	function g.multiselect(_, text, key, options, multiOpts)
+		multiOpts = multiOpts or {}
+		multiOpts.key = key
+		local r = row(M.row, text, multiOpts)
+		rowLabel(r, text, multiOpts, M.ctrlW)
+
+		local b = button(r, "", M.value, COLORS.text, COLORS.surface)
+		b.Name = "Multiselect"
+		b.Size = UDim2.new(0, M.ctrlW, 0, 22)
+		b.AnchorPoint = Vector2.new(1, 0.5)
+		b.Position = UDim2.new(1, 0, 0.5, 0)
+		corner(b, 5)
+		local bs = stroke(b, COLORS.edge, 0)
+
+		local val = label(b, "", M.value, COLORS.text, FONT.body)
+		val.Size = UDim2.new(1, -30, 1, 0)
+		val.Position = UDim2.fromOffset(9, 0)
+		val.TextTruncate = Enum.TextTruncate.AtEnd
+
+		local chev = label(b, "▾", M.value, COLORS.muted, FONT.medium)
+		chev.Size = UDim2.fromOffset(20, 22)
+		chev.AnchorPoint = Vector2.new(1, 0.5)
+		chev.Position = UDim2.new(1, -4, 0.5, 0)
+		chev.TextXAlignment = Enum.TextXAlignment.Center
+
+		local function summary()
+			local selected = multiOpts.state and multiOpts.state() or {}
+			local on = {}
+			for _, opt in ipairs(options) do
+				if selected[opt] == true then
+					table.insert(on, opt)
+				end
+			end
+			if #on == 0 then
+				return "none"
+			elseif #on == #options then
+				return "all"
+			end
+			return table.concat(on, ", ")
+		end
+		local function refresh()
+			val.Text = summary()
+		end
+		refresh()
+		table.insert(Prism.sync, refresh)
+
+		b.MouseButton1Click:Connect(function()
+			bs.Color = COLORS.accent
+			Prism.openDropdown(b, M.ctrlW, function(dropFrame)
+				for i, opt in ipairs(options) do
+					local selected = multiOpts.state and multiOpts.state() or {}
+					Prism.dropdownOption(dropFrame, 4 + (i - 1) * 24, string.lower(opt), selected[opt] == true, function()
+						if multiOpts.onChange then
+							multiOpts.onChange(opt, not selected[opt])
+						end
+						refresh()
+					end)
+				end
+				return 8 + #options * 24
+			end, function()
+				bs.Color = COLORS.edge
+			end)
+		end)
+
+		return r
+	end
+
+	-- ── list (single select, with optional search) ─────────────────────────
+	function g.list(_, text, listOpts)
+		listOpts = listOpts or {}
+		listOpts.isList = true
+		local rowH = M.listRow
+		local headerH = if listOpts.search ~= false then 52 else 24
+		local wanted = math.ceil((listOpts.height or 200) * 1.1)
+		local rowsFit = math.max(3, math.floor((wanted - headerH - 8) / rowH))
+		local totalH = headerH + rowsFit * rowH + 8
+
+		local r = row(totalH, text, listOpts)
+		local title = label(r, string.lower(text), M.title, COLORS.text, FONT.body)
+		title.Size = UDim2.new(1, -110, 0, 22)
+		local countLabel = label(r, "", M.small, COLORS.muted, FONT.medium)
+		countLabel.Size = UDim2.new(0, 100, 0, 22)
+		countLabel.Position = UDim2.new(1, -100, 0, 0)
+		countLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+		local top = 24
+		local query = ""
+		local refresh
+		if listOpts.search ~= false then
+			local box = Instance.new("TextBox")
+			box.Size = UDim2.new(1, 0, 0, 24)
+			box.Position = UDim2.new(0, 0, 0, 24)
+			box.BackgroundColor3 = COLORS.surface
+			box.BorderSizePixel = 0
+			setFont(box, FONT.body)
+			box.TextSize = M.value
+			box.TextColor3 = COLORS.text
+			box.PlaceholderText = "search"
+			box.PlaceholderColor3 = COLORS.muted
+			box.Text = ""
+			box.ClearTextOnFocus = false
+			box.TextXAlignment = Enum.TextXAlignment.Left
+			box.Parent = r
+			corner(box, 6)
+			stroke(box, COLORS.edge, 0)
+			padding(box, 0, 8, 0, 10)
+			box:GetPropertyChangedSignal("Text"):Connect(function()
+				query = string.lower(box.Text)
+				if refresh then
+					refresh()
+				end
+			end)
+			top = 52
+		end
+
+		local scroller = Instance.new("ScrollingFrame")
+		scroller.Size = UDim2.new(1, 0, 1, -top)
+		scroller.Position = UDim2.new(0, 0, 0, top)
+		scroller.BackgroundColor3 = COLORS.side
+		scroller.BorderSizePixel = 0
+		scroller.ScrollBarThickness = 4
+		scroller.ScrollBarImageColor3 = COLORS.faint
+		scroller.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		scroller.CanvasSize = UDim2.new(0, 0, 0, 0)
+		scroller.ScrollingDirection = Enum.ScrollingDirection.Y
+		scroller.Parent = r
+		corner(scroller, 6)
+		stroke(scroller, COLORS.edge, 0)
+		vlist(scroller, 2)
+		padding(scroller, 4, 6, 4, 4)
+
+		local pool = {}
+		local rowIds = {}
+		local lastSelection = nil
+
+		local function makeRow()
+			local b = button(scroller, "", M.value, COLORS.dim, COLORS.accent)
+			b.BackgroundTransparency = 1
+			b.Size = UDim2.new(1, 0, 0, rowH - 2)
+			b.TextXAlignment = Enum.TextXAlignment.Left
+			b.TextTruncate = Enum.TextTruncate.AtEnd
+			setFont(b, FONT.body)
+			corner(b, 5)
+			padding(b, 0, 8, 0, 8)
+			local s = stroke(b, COLORS.accent, 1)
+			local sub = label(b, "", M.small, COLORS.muted, FONT.medium)
+			sub.Size = UDim2.new(0, 120, 1, 0)
+			sub.Position = UDim2.new(1, -120, 0, 0)
+			sub.TextXAlignment = Enum.TextXAlignment.Right
+			local rec = { btn = b, sub = sub, stroke = s, selected = false }
+			b.MouseEnter:Connect(function()
+				if not rec.selected then
+					tween(b, TW.hover, { BackgroundTransparency = 0.88 })
+				end
+			end)
+			b.MouseLeave:Connect(function()
+				if not rec.selected then
+					tween(b, TW.hover, { BackgroundTransparency = 1 })
+				end
+			end)
+			b.MouseButton1Click:Connect(function()
+				local id = rowIds[b]
+				if id ~= nil and listOpts.onSelect then
+					local ok, err = pcall(listOpts.onSelect, id)
+					if not ok then
+						warn("prism list " .. tostring(text) .. ": " .. tostring(err))
+					end
+					refresh()
+				end
+			end)
+			return rec
+		end
+
+		refresh = function()
+			local items = if listOpts.items then listOpts.items() else {}
+			local selection = if listOpts.selected then listOpts.selected() else nil
+			lastSelection = selection
+			local shown = 0
+			for _, item in ipairs(items) do
+				local lab = tostring(item.label or item.id)
+				local matches = query == ""
+					or string.find(string.lower(lab), query, 1, true)
+					or (item.sub and string.find(string.lower(tostring(item.sub)), query, 1, true))
+				if matches then
+					shown += 1
+					local rec = pool[shown]
+					if not rec then
+						rec = makeRow()
+						pool[shown] = rec
+					end
+					local b = rec.btn
+					rowIds[b] = item.id
+					b.Visible = true
+					b.LayoutOrder = shown
+					b.Text = lab
+					rec.sub.Text = tostring(item.sub or "")
+					rec.sub.TextColor3 = item.color or COLORS.muted
+					rec.selected = item.id == selection
+					b.TextColor3 = if rec.selected then COLORS.text elseif item.dim then COLORS.muted else COLORS.dim
+					b.BackgroundColor3 = COLORS.accent
+					b.BackgroundTransparency = if rec.selected then 0.82 else 1
+					rec.stroke.Transparency = if rec.selected then 0.35 else 1
+				end
+			end
+			for i = shown + 1, #pool do
+				pool[i].btn.Visible = false
+			end
+			countLabel.Text = if shown == #items then tostring(#items) else ("%d / %d"):format(shown, #items)
+		end
+		refresh()
+		table.insert(Prism.sync, function()
+			local selection = if listOpts.selected then listOpts.selected() else nil
+			if selection ~= lastSelection then
+				refresh()
+			end
+		end)
+		return refresh
+	end
+
+	return g
+end
+
+-------------------------------------------------------------------------------
+-- §9 tooltip / dropdown / bind popup
+-------------------------------------------------------------------------------
+local tipFrame = nil
+
+function Prism.tip(target, text)
+	if type(text) ~= "string" or text == "" then
+		return
+	end
+	target.MouseEnter:Connect(function()
+		if not Prism.gui then
+			return
+		end
+		if not tipFrame or not tipFrame.Parent then
+			local t = Instance.new("TextLabel")
+			t.Name = "Tooltip"
+			t.AutomaticSize = Enum.AutomaticSize.XY
+			t.Size = UDim2.new(0, 0, 0, 0)
+			t.BackgroundColor3 = COLORS.pop
+			setFont(t, FONT.body)
+			t.TextSize = M.desc
+			t.TextColor3 = COLORS.text
+			t.TextWrapped = true
+			t.TextXAlignment = Enum.TextXAlignment.Left
+			t.ZIndex = 200
+			t.Visible = false
+			t.Parent = Prism.gui
+			corner(t, 6)
+			stroke(t, COLORS.edge, 0)
+			padding(t, 6, 10, 6, 10)
+			local cap = Instance.new("UISizeConstraint")
+			cap.MaxSize = Vector2.new(260, 400)
+			cap.Parent = t
+			tipFrame = t
+		end
+		local tf = tipFrame :: TextLabel
+		tf.Text = text
+		local m = userInputService:GetMouseLocation()
+		local inset = if Prism.gui.IgnoreGuiInset then 0 else guiService:GetGuiInset().Y
+		tf.Position = UDim2.fromOffset(m.X + 14, m.Y - inset + 10)
+		tf.Visible = true
+	end)
+	target.MouseLeave:Connect(function()
+		if tipFrame then
+			tipFrame.Visible = false
+		end
+	end)
+end
+
+-- dropdown popover
+Prism.popup = nil
+Prism.popupHost = nil
+
+function Prism.closeDropdown()
+	local p = Prism.popup
+	Prism.popup = nil
+	if p then
+		pcall(p.catcher.Destroy, p.catcher)
+		pcall(p.frame.Destroy, p.frame)
+		if p.onClose then
+			pcall(p.onClose)
+		end
+	end
+end
+
+function Prism.openDropdown(anchor, width, build, onClose)
+	Prism.closeDropdown()
+	local host = Prism.popupHost or Prism.root
+	if not host then
+		return nil
+	end
+	local catcher = Instance.new("TextButton")
+	catcher.Name = "DropdownCatcher"
+	catcher.BackgroundTransparency = 1
+	catcher.Text = ""
+	catcher.AutoButtonColor = false
+	catcher.Size = UDim2.new(1, 400, 1, 0)
+	catcher.ZIndex = 58
+	catcher.Parent = host
+
+	local f = frame(host, COLORS.pop)
+	f.Name = "Dropdown"
+	f.ZIndex = 60
+	f.Active = true
+	corner(f, 8)
+	stroke(f, COLORS.edge, 0)
+
+	local h = build(f)
+	local ap = anchor.AbsolutePosition - host.AbsolutePosition
+	local as = anchor.AbsoluteSize
+	local hostH = host.AbsoluteSize.Y
+	local w = math.max(width, as.X)
+	local y = ap.Y + as.Y + 4
+	local above = false
+	if y + h > hostH - 6 and ap.Y - h - 4 > 6 then
+		y = ap.Y - h - 4
+		above = true
+	end
+	local base = UDim2.fromOffset(math.floor(ap.X + as.X - w + 0.5), math.floor(y + 0.5))
+	f.Size = UDim2.fromOffset(w, h)
+	f.Position = base + UDim2.fromOffset(0, if above then 4 else -4)
+	tween(f, TW.pop, { Position = base })
+
+	catcher.MouseButton1Click:Connect(Prism.closeDropdown)
+	Prism.popup = { frame = f, catcher = catcher, onClose = onClose }
+	return f
+end
+
+function Prism.dropdownOption(parent, y, text, selected, onPick)
+	local b = button(parent, "", M.value, COLORS.dim, COLORS.card)
+	b.BackgroundTransparency = 1
+	b.Size = UDim2.new(1, -8, 0, 24)
+	b.Position = UDim2.fromOffset(4, y)
+	b.ZIndex = 61
+	corner(b, 5)
+	local l = label(b, text, M.value, if selected then COLORS.accent else COLORS.dim, FONT.body)
+	l.Size = UDim2.new(1, -30, 1, 0)
+	l.Position = UDim2.fromOffset(8, 0)
+	l.ZIndex = 62
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	local ic = label(b, "✓", M.small, COLORS.accent, FONT.semibold)
+	ic.Size = UDim2.fromOffset(18, 24)
+	ic.AnchorPoint = Vector2.new(1, 0.5)
+	ic.Position = UDim2.new(1, -6, 0.5, 0)
+	ic.ZIndex = 62
+	ic.Visible = selected
+	b.MouseEnter:Connect(function()
+		tween(b, TW.hover, { BackgroundTransparency = 0 })
+		if not selected then
+			tween(l, TW.hover, { TextColor3 = COLORS.text })
+		end
+	end)
+	b.MouseLeave:Connect(function()
+		tween(b, TW.hover, { BackgroundTransparency = 1 })
+		tween(l, TW.hover, { TextColor3 = if selected then COLORS.accent else COLORS.dim })
+	end)
+	b.MouseButton1Click:Connect(onPick)
+	return b
+end
+
+-- bind popup (key + mode)
+local BIND_MODES = { "Toggle", "Hold", "Always", "Never" }
+Prism.binds = {}
+Prism.binds = shared.PrismBinds or {}
+shared.PrismBinds = Prism.binds
+local bindPopup = nil
+
+function Prism.keyLabel(name)
+	if type(name) ~= "string" or name == "" then
+		return "—"
+	end
+	local pretty = {
+		MouseButton1 = "LMB", MouseButton2 = "RMB", MouseButton3 = "MMB",
+		LeftShift = "SHIFT", RightShift = "RSHIFT", LeftControl = "CTRL",
+		LeftAlt = "ALT", Return = "ENTER", CapsLock = "CAPS",
+	}
+	return pretty[name] or name
+end
+
+function Prism.closeBindPopup()
+	local p = bindPopup
+	bindPopup = nil
+	if p then
+		p:Destroy()
+	end
+end
+
+function Prism.captureKey(callback)
+	local finished = false
+	local started = os.clock()
+	local conn, heartbeat
+	local function finish(name)
+		if finished then
+			return
+		end
+		finished = true
+		if conn then
+			conn:Disconnect()
+		end
+		if heartbeat then
+			heartbeat:Disconnect()
+		end
+		callback(name)
+	end
+	conn = userInputService.InputBegan:Connect(function(input)
+		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
+			finish(nil)
+			return
+		end
+		if os.clock() - started < 0.2 and input.UserInputType == Enum.UserInputType.MouseButton1 then
+			return
+		end
+		if input.KeyCode ~= Enum.KeyCode.Unknown then
+			finish(input.KeyCode.Name)
+		elseif input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.MouseButton2
+			or input.UserInputType == Enum.UserInputType.MouseButton3 then
+			finish(input.UserInputType.Name)
+		end
+	end)
+	heartbeat = runService.Heartbeat:Connect(function()
+		if os.clock() - started > 8 then
+			finish(false)
+		end
+	end)
+end
+
+function Prism.openBindPopup(key, title, at)
+	local root = Prism.root
+	if not root then
+		return
+	end
+	Prism.closeBindPopup()
+
+	local bind = Prism.binds[key]
+	if type(bind) ~= "table" then
+		bind = { key = "", mode = "Toggle" }
+		Prism.binds[key] = bind
+	end
+	if type(Prism.onBindsChanged) == "function" then
+		Prism.onBindsChanged()
+	end
+
+	local W, H = 300, 206
+	local pop = frame(root, COLORS.pop)
+	pop.Name = "BindPopup"
+	pop.Size = UDim2.fromOffset(W, H)
+	local rel = if at then at - root.AbsolutePosition else Vector2.new(root.AbsoluteSize.X / 2 - W / 2, root.AbsoluteSize.Y / 2 - H / 2)
+	pop.Position = UDim2.fromOffset(
+		math.floor(math.clamp(rel.X, 8, math.max(8, root.AbsoluteSize.X - W - 8))),
+		math.floor(math.clamp(rel.Y, 8, math.max(8, root.AbsoluteSize.Y - H - 8)))
+	)
+	pop.ZIndex = 50
+	pop.Active = true
+	corner(pop, 10)
+	stroke(pop, COLORS.accent, 0.55)
+	bindPopup = pop
+
+	local cap = label(pop, "keybind", M.tiny, COLORS.accent, FONT.semibold)
+	cap.Size = UDim2.new(1, -60, 0, 14)
+	cap.Position = UDim2.fromOffset(16, 12)
+	cap.ZIndex = 51
+
+	local head = label(pop, string.lower(title or key), M.title, COLORS.text, FONT.semibold)
+	head.Size = UDim2.new(1, -60, 0, 18)
+	head.Position = UDim2.fromOffset(16, 27)
+	head.TextTruncate = Enum.TextTruncate.AtEnd
+	head.ZIndex = 51
+
+	local closeB = button(pop, "✕", M.title, COLORS.muted, COLORS.card)
+	closeB.Size = UDim2.fromOffset(28, 28)
+	closeB.AnchorPoint = Vector2.new(1, 0)
+	closeB.Position = UDim2.new(1, -10, 0, 10)
+	closeB.BackgroundTransparency = 1
+	corner(closeB, 7)
+	closeB.ZIndex = 51
+	closeB.MouseEnter:Connect(function()
+		closeB.TextColor3 = COLORS.text
+	end)
+	closeB.MouseLeave:Connect(function()
+		closeB.TextColor3 = COLORS.muted
+	end)
+	closeB.MouseButton1Click:Connect(Prism.closeBindPopup)
+
+	local hair = frame(pop, COLORS.hairline)
+	hair.Size = UDim2.new(1, -32, 0, 1)
+	hair.Position = UDim2.fromOffset(16, 56)
+	hair.ZIndex = 51
+
+	local keyLbl = label(pop, "key", M.title, COLORS.dim, FONT.body)
+	keyLbl.Size = UDim2.fromOffset(64, 30)
+	keyLbl.Position = UDim2.fromOffset(16, 68)
+	keyLbl.ZIndex = 51
+
+	local keyB = button(pop, "", M.value, COLORS.text, COLORS.surface)
+	keyB.Size = UDim2.fromOffset(W - 104, 30)
+	keyB.Position = UDim2.fromOffset(88, 68)
+	corner(keyB, 7)
+	stroke(keyB, COLORS.edge, 0)
+	keyB.ZIndex = 51
+	local keyTxt = label(keyB, "", M.value, COLORS.text, FONT.medium)
+	keyTxt.Size = UDim2.new(1, -20, 1, 0)
+	keyTxt.Position = UDim2.fromOffset(10, 0)
+	keyTxt.TextTruncate = Enum.TextTruncate.AtEnd
+	keyTxt.ZIndex = 52
+
+	local modeLbl = label(pop, "mode", M.title, COLORS.dim, FONT.body)
+	modeLbl.Size = UDim2.fromOffset(64, 30)
+	modeLbl.Position = UDim2.fromOffset(16, 108)
+	modeLbl.ZIndex = 51
+
+	local seg = frame(pop, COLORS.surface)
+	seg.Size = UDim2.fromOffset(W - 104, 30)
+	seg.Position = UDim2.fromOffset(88, 108)
+	corner(seg, 7)
+	stroke(seg, COLORS.edge, 0)
+	seg.ZIndex = 51
+
+	local segBtns = {}
+	local function refresh()
+		keyTxt.Text = Prism.keyLabel(bind.key)
+		for m, sb in pairs(segBtns) do
+			local on = m == (bind.mode or "Toggle")
+			sb.TextColor3 = if on then COLORS.accent else COLORS.muted
+			setFont(sb, if on then FONT.semibold else FONT.body)
+		end
+		local tag = Prism.bindTags[key]
+		if tag then
+			tag()
+		end
+	end
+	for i, mode in ipairs(BIND_MODES) do
+		local segW = (W - 104 - 6) / #BIND_MODES
+		local sb = button(seg, string.lower(mode), M.small, COLORS.muted, COLORS.surface)
+		sb.BackgroundTransparency = 1
+		sb.Position = UDim2.fromOffset(3 + math.floor((i - 1) * segW + 0.5), 3)
+		sb.Size = UDim2.fromOffset(math.floor(i * segW + 0.5) - math.floor((i - 1) * segW + 0.5), 24)
+		sb.ZIndex = 52
+		segBtns[mode] = sb
+		sb.MouseButton1Click:Connect(function()
+			bind.mode = mode
+			refresh()
+		end)
+	end
+	refresh()
+
+	keyB.MouseButton1Click:Connect(function()
+		keyTxt.Text = "press a key…"
+		Prism.captureKey(function(name)
+			if name ~= false then
+				bind.key = name or ""
+			end
+			if pop.Parent then
+				refresh()
+			end
+		end)
+	end)
+
+	local status = label(pop, "no key yet", M.small, COLORS.dim, FONT.medium)
+	status.Name = "Status"
+	status.Size = UDim2.fromOffset(W - 44, 18)
+	status.Position = UDim2.fromOffset(16, 150)
+	status.TextTruncate = Enum.TextTruncate.AtEnd
+	status.ZIndex = 51
+
+	local function paintStatus()
+		if type(bind.key) ~= "string" or bind.key == "" then
+			status.Text = if bind.mode == "Always" or bind.mode == "Never" then ("no key · always %s"):format(if bind.mode == "Always" then "on" else "off") else "no key yet"
+			status.TextColor3 = COLORS.muted
+		else
+			status.Text = ("bound to %s · %s"):format(Prism.keyLabel(bind.key), string.lower(bind.mode or "Toggle"))
+			status.TextColor3 = COLORS.dim
+		end
+	end
+	paintStatus()
+
+	local clearB = button(pop, "clear", M.value, COLORS.danger, COLORS.danger)
+	clearB.Size = UDim2.fromOffset(76, 26)
+	clearB.Position = UDim2.fromOffset(16, H - 38)
+	clearB.BackgroundTransparency = 0.86
+	corner(clearB, 7)
+	stroke(clearB, COLORS.danger, 0.6)
+	clearB.ZIndex = 51
+	clearB.MouseButton1Click:Connect(function()
+		Prism.binds[key] = nil
+		if type(Prism.onBindsChanged) == "function" then
+			Prism.onBindsChanged()
+		end
+		local tag = Prism.bindTags[key]
+		if tag then
+			tag()
+		end
+		Prism.closeBindPopup()
+	end)
+
+	local hint = label(pop, "esc clears · mouse 4/5 supported", M.small, COLORS.muted, FONT.body)
+	hint.Size = UDim2.fromOffset(W - 116, 26)
+	hint.Position = UDim2.fromOffset(100, H - 38)
+	hint.TextXAlignment = Enum.TextXAlignment.Right
+	hint.ZIndex = 51
+end
+
+-------------------------------------------------------------------------------
+-- §10 window + pages
+-------------------------------------------------------------------------------
+Prism.metrics = {
+	width = 820, height = 520, railW = 184, headerH = 50, subbarH = 32, panelW = 236, gap = 14,
+}
+
+local TAB_ORDER = { "Home", "Combat", "Visuals", "Config", "Debug" }
+local TAB_LABEL = { Home = "Home", Combat = "Combat", Visuals = "Visuals", Config = "Config", Debug = "Debug" }
+local TAB_SECTION = { Home = "Main", Combat = "Gameplay", Visuals = "Gameplay", Config = "System", Debug = "System" }
+Prism.TAB_ORDER = TAB_ORDER
+
+function Prism.new()
+	local metrics = Prism.metrics
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "PrismUI"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.DisplayOrder = 1000
+	gui.Parent = localPlayer:WaitForChild("PlayerGui")
+	Prism.gui = gui
+
+	local host = frame(gui)
+	host.Name = "Host"
+	host.AnchorPoint = Vector2.new(0.5, 0.5)
+	host.Size = UDim2.new(0, metrics.width, 0, metrics.height)
+	host.Position = UDim2.fromScale(0.5, 0.5)
+	host.Visible = false
+	host.ZIndex = 2
+	Prism.host = host
+
+	local root = frame(host, COLORS.bg)
+	root.Name = "Root"
+	root.Size = UDim2.fromScale(1, 1)
+	root.ZIndex = 1
+	root.Active = true
+	corner(root, 12)
+	stroke(root, COLORS.accent, 0.7)
+	Prism.root = root
+	Prism.popupHost = host
+
+	local mouseFree = Instance.new("TextButton")
+	mouseFree.Modal = true
+	mouseFree.Text = ""
+	mouseFree.AutoButtonColor = false
+	mouseFree.BackgroundTransparency = 1
+	mouseFree.Size = UDim2.fromOffset(1, 1)
+	mouseFree.Parent = root
+	Prism.mouseFree = mouseFree
+
+	-- sidebar -------------------------------------------------------------
+	local side = frame(root, COLORS.side)
+	side.Name = "Sidebar"
+	side.Size = UDim2.new(0, metrics.railW, 1, 0)
+	side.ZIndex = 3
+	corner(side, 12)
+	local sideAccent = frame(side, COLORS.accent)
+	sideAccent.Size = UDim2.new(0, 2, 0.5, 0)
+	sideAccent.AnchorPoint = Vector2.new(0, 0.5)
+	sideAccent.Position = UDim2.new(0, 0, 0.5, 0)
+	gradient(sideAccent, COLORS.accent, COLORS.accent2, 90)
+
+	local LOGO_H = 58
+	local logo = frame(side)
+	logo.Name = "Logo"
+	logo.Size = UDim2.new(1, 0, 0, LOGO_H)
+	logo.ZIndex = 4
+	logo.Active = true
+
+	local brand = label(logo, "PRISM", 18, COLORS.text, FONT.bold)
+	brand.Size = UDim2.new(1, -36, 1, 0)
+	brand.Position = UDim2.fromOffset(18, 0)
+	brand.ZIndex = 5
+	local brandGrad = gradient(brand, COLORS.text, COLORS.accent, 90)
+	brandGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, COLORS.text),
+		ColorSequenceKeypoint.new(0.5, COLORS.accent),
+		ColorSequenceKeypoint.new(1, COLORS.accent2),
+	})
+	brand.TextColor3 = Color3.new(1, 1, 1)
+
+	-- nav ------------------------------------------------------------------
+	local nav = Instance.new("ScrollingFrame")
+	nav.Name = "Nav"
+	nav.Position = UDim2.new(0, 0, 0, LOGO_H)
+	nav.Size = UDim2.new(1, 0, 1, -LOGO_H - 56)
+	nav.BackgroundTransparency = 1
+	nav.BorderSizePixel = 0
+	nav.ScrollBarThickness = 2
+	nav.ScrollBarImageColor3 = COLORS.faint
+	nav.ScrollingDirection = Enum.ScrollingDirection.Y
+	nav.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	nav.CanvasSize = UDim2.new(0, 0, 0, 0)
+	nav.ZIndex = 4
+	nav.Parent = side
+	vlist(nav, 1)
+	padding(nav, 0, 10, 6, 10)
+
+	-- selection pill
+	local navClip = frame(side)
+	navClip.Name = "NavSelection"
+	navClip.Position = nav.Position
+	navClip.Size = nav.Size
+	navClip.ClipsDescendants = true
+	navClip.ZIndex = 3
+	local selPill = frame(navClip, COLORS.accent)
+	selPill.BackgroundTransparency = 0.86
+	selPill.Visible = false
+	corner(selPill, 6)
+	stroke(selPill, COLORS.accent, 0.55)
+	local navLiquid = Prism.liquid(selPill, function(a, b)
+		selPill.Position = UDim2.fromOffset(navSelX or 0, a)
+		selPill.Size = UDim2.fromOffset(navSelW or 160, math.max(4, b - a))
+	end)
+	local navSelX, navSelW = 0, 160
+
+	local lastSection = nil
+	local navOrder = 0
+	local tabButtons = {}
+	local sectionCaps = {}
+
+	for _, name in ipairs(TAB_ORDER) do
+		local sec = TAB_SECTION[name]
+		if sec and sec ~= lastSection then
+			navOrder += 1
+			local cap = label(nav, string.lower(sec), M.tiny, COLORS.muted, FONT.body)
+			cap.Size = UDim2.new(1, 0, 0, 26)
+			cap.TextYAlignment = Enum.TextYAlignment.Bottom
+			cap.LayoutOrder = navOrder
+			cap.ZIndex = 5
+			padding(cap, 0, 0, 4, 10)
+			sectionCaps[sec] = cap
+			lastSection = sec
+		end
+		navOrder += 1
+		local item = button(nav, "", 10, COLORS.text, COLORS.card)
+		item.Name = "Nav_" .. name
+		item.BackgroundTransparency = 1
+		item.Size = UDim2.new(1, 0, 0, 30)
+		item.LayoutOrder = navOrder
+		item.ZIndex = 5
+		corner(item, 6)
+		local lbl = label(item, string.lower(TAB_LABEL[name] or name), M.title, COLORS.dim, FONT.body)
+		lbl.Size = UDim2.new(1, -20, 1, 0)
+		lbl.Position = UDim2.fromOffset(14, 0)
+		lbl.ZIndex = 7
+		local hovered = false
+
+		local function paint(on, animate)
+			local txtCol = if on then COLORS.text elseif hovered then COLORS.dim else COLORS.muted
+			local bgTr = if hovered and not on then 0.94 else 1
+			if animate then
+				tween(lbl, TW.hover, { TextColor3 = txtCol })
+				tween(item, TW.hover, { BackgroundTransparency = bgTr })
+			else
+				lbl.TextColor3 = txtCol
+				item.BackgroundTransparency = bgTr
+			end
+			setFont(lbl, if on then FONT.medium else FONT.body)
+		end
+
+		item.MouseEnter:Connect(function()
+			hovered = true
+			paint(Prism.activeTab == name, true)
+		end)
+		item.MouseLeave:Connect(function()
+			hovered = false
+			paint(Prism.activeTab == name, true)
+		end)
+		item.MouseButton1Click:Connect(function()
+			Prism.showTab(name)
+		end)
+		tabButtons[name] = { item = item, paint = paint, label = lbl }
+		paint(false)
+	end
+	Prism.tabButtons = tabButtons
+	Prism.sectionCaps = sectionCaps
+
+	-- the pill's placement
+	local function placeNav(animate)
+		local d = tabButtons[Prism.activeTab]
+		local item = d and d.item
+		if not (item and item.Parent and item.Visible) then
+			selPill.Visible = false
+			return
+		end
+		local rel = item.AbsolutePosition - navClip.AbsolutePosition
+		local size = item.AbsoluteSize
+		if size.Y < 1 then
+			return
+		end
+		navSelX, navSelW = rel.X, size.X
+		selPill.Visible = true
+		navLiquid.to(rel.Y, rel.Y + size.Y, animate and Prism.visible == true)
+	end
+	Prism.placeNav = placeNav
+
+	-- top bar --------------------------------------------------------------
+	local top = frame(root)
+	top.Name = "TopBar"
+	top.Size = UDim2.new(1, -metrics.railW, 0, metrics.headerH)
+	top.Position = UDim2.new(0, metrics.railW, 0, 0)
+	top.ZIndex = 3
+	top.Active = true
+	local topHair = frame(top, COLORS.hairline)
+	topHair.Size = UDim2.new(1, 0, 0, 1)
+	topHair.Position = UDim2.new(0, 0, 1, -1)
+
+	-- search
+	local searchBox = frame(top, COLORS.surface)
+	searchBox.Size = UDim2.fromOffset(180, 28)
+	searchBox.AnchorPoint = Vector2.new(1, 0.5)
+	searchBox.Position = UDim2.new(1, -14, 0.5, 0)
+	corner(searchBox, 6)
+	local searchStroke = stroke(searchBox, COLORS.edge, 0)
+	local searchInput = Instance.new("TextBox")
+	searchInput.Size = UDim2.new(1, -16, 1, 0)
+	searchInput.Position = UDim2.fromOffset(8, 0)
+	searchInput.BackgroundTransparency = 1
+	searchInput.BorderSizePixel = 0
+	setFont(searchInput, FONT.body)
+	searchInput.TextSize = M.value
+	searchInput.TextColor3 = COLORS.text
+	searchInput.PlaceholderText = "search settings"
+	searchInput.PlaceholderColor3 = COLORS.muted
+	searchInput.Text = ""
+	searchInput.ClearTextOnFocus = false
+	searchInput.TextXAlignment = Enum.TextXAlignment.Left
+	searchInput.ZIndex = 5
+	searchInput.Parent = searchBox
+	searchInput:GetPropertyChangedSignal("Text"):Connect(function()
+		Prism.search(searchInput.Text)
+	end)
+	searchInput.Focused:Connect(function()
+		tween(searchStroke, TW.hover, { Color = COLORS.accent })
+	end)
+	searchInput.FocusLost:Connect(function()
+		tween(searchStroke, TW.hover, { Color = COLORS.edge })
+	end)
+	Prism.searchInput = searchInput
+
+	-- close button
+	local closeBtn = button(top, "✕", M.title, COLORS.muted, COLORS.card)
+	closeBtn.Size = UDim2.fromOffset(28, 28)
+	closeBtn.AnchorPoint = Vector2.new(1, 0.5)
+	closeBtn.Position = UDim2.new(1, -50, 0.5, 0)
+	closeBtn.BackgroundTransparency = 1
+	corner(closeBtn, 6)
+	closeBtn.ZIndex = 4
+	closeBtn.MouseEnter:Connect(function()
+		tween(closeBtn, TW.hover, { BackgroundTransparency = 0 })
+		closeBtn.TextColor3 = COLORS.text
+	end)
+	closeBtn.MouseLeave:Connect(function()
+		tween(closeBtn, TW.hover, { BackgroundTransparency = 1 })
+		closeBtn.TextColor3 = COLORS.muted
+	end)
+	closeBtn.MouseButton1Click:Connect(function()
+		Prism.setVisible(false)
+	end)
+
+	-- content --------------------------------------------------------------
+	local content = frame(root)
+	content.Name = "Content"
+	content.Size = UDim2.new(1, -metrics.railW, 1, -metrics.headerH)
+	content.Position = UDim2.new(0, metrics.railW, 0, metrics.headerH)
+	content.ClipsDescendants = true
+	content.ZIndex = 3
+	Prism.content = content
+
+	-- page curtain for reveal animation
+	local pageCurtain = frame(content, COLORS.bg)
+	pageCurtain.Name = "PageCurtain"
+	pageCurtain.Size = UDim2.fromScale(1, 1)
+	pageCurtain.ZIndex = 40
+	pageCurtain.Visible = false
+	pageCurtain.Active = false
+	corner(pageCurtain, 12)
+	Prism.pageCurtain = pageCurtain
+
+	-- user card ------------------------------------------------------------
+	local card = frame(side)
+	card.Name = "UserCard"
+	card.Size = UDim2.new(1, 0, 0, 56)
+	card.Position = UDim2.new(0, 0, 1, -56)
+	card.ZIndex = 8
+	corner(card, 12)
+	local cardHair = frame(card, COLORS.hairline)
+	cardHair.Size = UDim2.new(1, 0, 0, 1)
+
+	local avatar = Instance.new("ImageLabel")
+	avatar.Size = UDim2.fromOffset(28, 28)
+	avatar.AnchorPoint = Vector2.new(0, 0.5)
+	avatar.Position = UDim2.new(0, 14, 0.5, 0)
+	avatar.BackgroundColor3 = COLORS.card
+	avatar.Image = ("rbxthumb://type=AvatarHeadShot&id=%d&w=48&h=48"):format(localPlayer.UserId)
+	avatar.ZIndex = 9
+	avatar.Parent = card
+	corner(avatar, 14)
+	stroke(avatar, COLORS.accent, 0.5)
+
+	local nameLabel = label(card, localPlayer.DisplayName, M.title, COLORS.text, FONT.medium)
+	nameLabel.Size = UDim2.new(1, -60, 0, 16)
+	nameLabel.Position = UDim2.new(0, 50, 0, 11)
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.ZIndex = 9
+
+	local subLabel = label(card, "prism v" .. Prism.publicVersion, M.small, COLORS.muted, FONT.body)
+	subLabel.Size = UDim2.new(1, -60, 0, 14)
+	subLabel.Position = UDim2.new(0, 50, 0, 28)
+	subLabel.ZIndex = 9
+
+	-- window show / hide --------------------------------------------------
+	local animToken = 0
+	local hostBase = host.Position
+
+	function Prism.setVisible(open)
+		Prism.visible = open
+		animToken += 1
+		local token = animToken
+		gui.Enabled = open
+		if open then
+			host.Visible = true
+			mouseFree.Visible = true
+			task.defer(function()
+				if token == animToken then
+					placeNav(false)
+				end
+			end)
+		else
+			Prism.closeBindPopup()
+			Prism.closeDropdown()
+			Prism.slide(host, hostBase, 0, TW.close.Time, nil, true, function()
+				if token == animToken and not Prism.visible then
+					host.Visible = false
+					gui.Enabled = false
+				end
+			end)
+			return
+		end
+		Prism.slide(host, hostBase, 0, TW.open.Time, nil, false, nil)
+	end
+
+	Prism.root.Visible = true
+	Prism.revealToken = 0
+
+	function Prism.reveal(obj, base, dx, dy)
+		Prism.settle(obj, base)
+		local sheet = Prism.pageCurtain
+		if not sheet then
+			return
+		end
+		Prism.revealToken += 1
+		local token = Prism.revealToken
+		sheet.Position = UDim2.fromOffset(0, 0)
+		sheet.BackgroundTransparency = 0.15
+		sheet.Visible = true
+		tween(sheet, TW.reveal, { BackgroundTransparency = 1 }).Completed:Connect(function(state)
+			if state == Enum.PlaybackState.Completed and token == Prism.revealToken then
+				sheet.Visible = false
+			end
+		end)
+	end
+
+	function Prism.settle(obj, base)
+		if obj.Position ~= base then
+			obj.Position = base
+		end
+	end
+
+	-- page registry -------------------------------------------------------
+	Prism.pages = {}
+	Prism.subTabs = {}
+
+	function Prism.addTab(name, subs)
+		local page = frame(content)
+		page.Name = "Page_" .. name
+		page.Size = UDim2.new(1, 0, 1, 0)
+		page.Visible = false
+		Prism.pages[name] = page
+
+		local multi = #subs > 1
+		local bar = frame(page)
+		bar.Name = "SubBar"
+		bar.Size = UDim2.new(1, -36, 0, metrics.subbarH)
+		bar.Position = UDim2.new(0, 18, 0, 4)
+		bar.Visible = multi
+
+		local track = frame(bar, COLORS.surface)
+		track.Name = "Track"
+		track.AutomaticSize = Enum.AutomaticSize.X
+		track.Size = UDim2.new(0, 0, 1, -2)
+		track.AnchorPoint = Vector2.new(0, 0.5)
+		track.Position = UDim2.new(0, 0, 0.5, 0)
+		corner(track, 8)
+		stroke(track, COLORS.edge, 0.2)
+
+		local thumb = frame(track, COLORS.accent)
+		thumb.BackgroundTransparency = 0.82
+		thumb.ZIndex = 2
+		thumb.Visible = false
+		corner(thumb, 6)
+		stroke(thumb, COLORS.accent, 0.5)
+
+		local segList = frame(track)
+		segList.Name = "Segments"
+		segList.AutomaticSize = Enum.AutomaticSize.X
+		segList.Size = UDim2.new(0, 0, 1, 0)
+		segList.ZIndex = 3
+		vlist(segList, 2, true)
+		padding(segList, 3, 3, 3, 3)
+
+		local st = {
+			frames = {}, btns = {}, active = subs[1], order = subs,
+			track = track, thumb = thumb,
+		}
+		Prism.subTabs[name] = st
+
+		local crumb = label(bar, "", M.small, COLORS.muted, FONT.body)
+		crumb.AnchorPoint = Vector2.new(1, 0)
+		crumb.Position = UDim2.new(1, 0, 0, 0)
+		crumb.Size = UDim2.new(0.4, 0, 1, 0)
+		crumb.TextXAlignment = Enum.TextXAlignment.Right
+		crumb.TextTruncate = Enum.TextTruncate.AtEnd
+		st.crumb = crumb
+
+		st.liquid = Prism.liquid(thumb, function(a, b)
+			thumb.Position = UDim2.new(0, a, 0, 3)
+			thumb.Size = UDim2.new(0, math.max(4, b - a), 1, -6)
+		end)
+
+		local topOffset = if multi then metrics.subbarH + 6 else 0
+		st.top = topOffset
+		st.base = UDim2.new(0, 0, 0, topOffset)
+
+		for i, sub in ipairs(subs) do
+			local b = button(segList, "", M.value, COLORS.muted, COLORS.surface)
+			b.BackgroundTransparency = 1
+			b.AutomaticSize = Enum.AutomaticSize.X
+			b.Size = UDim2.new(0, 0, 1, 0)
+			b.LayoutOrder = i
+			b.ZIndex = 3
+			local lbl = label(b, string.lower(sub), M.value, COLORS.muted, FONT.body)
+			lbl.Size = UDim2.new(0, 0, 1, 0)
+			lbl.AutomaticSize = Enum.AutomaticSize.X
+			lbl.TextYAlignment = Enum.TextYAlignment.Center
+			lbl.ZIndex = 3
+			padding(lbl, 0, 12, 0, 12)
+			st.btns[sub] = { lbl = lbl, btn = b }
+
+			b.MouseButton1Click:Connect(function()
+				Prism.showSub(name, sub)
+			end)
+
+			local scroll = Instance.new("ScrollingFrame")
+			scroll.Name = "Sub_" .. sub
+			scroll.Size = UDim2.new(1, 0, 1, -topOffset)
+			scroll.Position = UDim2.new(0, 0, 0, topOffset)
+			scroll.BackgroundTransparency = 1
+			scroll.BorderSizePixel = 0
+			scroll.ScrollBarThickness = 4
+			scroll.ScrollBarImageColor3 = COLORS.faint
+			scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+			scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+			scroll.Visible = i == 1
+			scroll.Parent = page
+			padding(scroll, 14, 18, 10, 18)
+
+			local left = frame(scroll)
+			left.Name = "L"
+			left.Size = UDim2.new(0.5, -30, 0, 0)
+			left.AutomaticSize = Enum.AutomaticSize.Y
+			vlist(left, 0)
+
+			local right = frame(scroll)
+			right.Name = "R"
+			right.Size = UDim2.new(0.5, -30, 0, 0)
+			right.Position = UDim2.new(0.5, 12, 0, 0)
+			right.AutomaticSize = Enum.AutomaticSize.Y
+			vlist(right, 0)
+
+			st.frames[sub] = scroll
+			st[sub] = { L = left, R = right, scroll = scroll }
+		end
+
+		Prism.showSub(name, subs[1])
+		st.built = true
+		return st
+	end
+
+	-- tab / sub-tab change -------------------------------------------------
+	function Prism.showTab(name)
+		local was = Prism.activeTab
+		Prism.activeTab = name
+		Prism.closeDropdown()
+		local changed = was ~= name
+		local animate = changed and was ~= "" and Prism.visible == true
+
+		for n, page in pairs(Prism.pages) do
+			local show = n == name
+			if show and animate then
+				Prism.reveal(page, UDim2.new())
+			elseif changed then
+				Prism.settle(page, UDim2.new())
+			end
+			page.Visible = show
+		end
+		for n, d in pairs(tabButtons) do
+			if not changed or n == name or n == was or not animate then
+				d.paint(n == name, animate)
+			end
+		end
+		task.defer(function()
+			placeNav(animate)
+		end)
+		if changed then
+			Prism.syncNow(name)
+		end
+	end
+
+	function Prism.showSub(tab, sub)
+		local st = Prism.subTabs[tab]
+		if not st then
+			return
+		end
+		Prism.closeDropdown()
+		local was = st.active
+		st.active = sub
+		local changed = was ~= sub
+		if st.crumb then
+			st.crumb.Text = string.lower((TAB_LABEL[tab] or tab) .. " / " .. sub)
+		end
+		local animate = changed and st.built == true and Prism.visible == true and Prism.activeTab == tab
+
+		for n, fr in pairs(st.frames) do
+			local show = n == sub
+			if show and animate then
+				Prism.reveal(fr, st.base)
+			elseif changed then
+				Prism.settle(fr, st.base)
+			end
+			fr.Visible = show
+		end
+		for n, b in pairs(st.btns) do
+			local on = n == sub
+			if animate then
+				tween(b.lbl, TW.hover, { TextColor3 = if on then COLORS.text else COLORS.muted })
+			else
+				b.lbl.TextColor3 = if on then COLORS.text else COLORS.muted
+			end
+			setFont(b.lbl, if on then FONT.medium else FONT.body)
+		end
+		if animate then
+			task.defer(function()
+				Prism.placeSubThumb(tab, true)
+			end)
+		else
+			Prism.placeSubThumb(tab, false)
+		end
+	end
+
+	function Prism.placeSubThumb(tab, animate)
+		local st = Prism.subTabs[tab]
+		if not (st and st.liquid and st.track) then
+			return
+		end
+		local b = st.btns[st.active]
+		local btn = b and b.btn
+		if not (btn and btn.Visible) then
+			st.thumb.Visible = false
+			return
+		end
+		local w = btn.AbsoluteSize.X
+		if w < 1 then
+			return
+		end
+		st.thumb.Visible = true
+		local x = btn.AbsolutePosition.X - st.track.AbsolutePosition.X
+		st.liquid.to(x, x + w, animate and Prism.visible == true)
+	end
+
+	-- search + filtering ----------------------------------------------------
+	function Prism.search(text)
+		Prism.searchText = string.lower(tostring(text or ""))
+		Prism.refilter()
+	end
+
+	-- Simple mode whitelist: put your keys here. Simple shows only these.
+	Prism.simpleKeys = {}
+
+	function Prism.modeAllows(advanced)
+		return Prism.uiMode == "Advanced" or not advanced
+	end
+
+	function Prism.refilter()
+		for _, r in ipairs(Prism.rows) do
+			local matchText = true
+			if Prism.searchText ~= "" then
+				matchText = string.find(string.lower(r.text), Prism.searchText, 1, true) ~= nil
+					or (r.desc and string.find(string.lower(r.desc), Prism.searchText, 1, true) ~= nil)
+			end
+			local parentOpen = true
+			if r.parent then
+				parentOpen = r.parent.open == true or Prism.searchText ~= ""
+					or (r.parent.when ~= nil and r.parent.when() == true)
+			end
+			r.frame.Visible = Prism.modeAllows(r.advanced) and matchText and parentOpen
+		end
+		for _, g in ipairs(Prism.groups) do
+			local any = false
+			for _, r in ipairs(g.rows) do
+				if r.frame.Visible then
+					any = true
+					break
+				end
+			end
+			g.frame.Visible = Prism.modeAllows(g.advanced) and (any or (#g.rows == 0 and Prism.searchText == ""))
+		end
+	end
+
+	function Prism.syncNow(tab)
+		for _, fn in ipairs(Prism.sync) do
+			pcall(fn)
+		end
+	end
+
+	-- dragging --------------------------------------------------------------
+	local dragging, dragStart, startPos = false, Vector2.zero, UDim2.new()
+	local dragConn = userInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local d = input.Position - dragStart
+			host.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end)
+	Prism.conn(dragConn)
+
+	for _, handle in ipairs({ top, logo }) do
+		handle.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				dragging = true
+				dragStart = input.Position
+				startPos = host.Position
+			end
+		end)
+		handle.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				dragging = false
+				hostBase = host.Position
+			end
+		end)
+	end
+
+	Prism.visible = true
+	return Prism
+end
+
+-------------------------------------------------------------------------------
+-- §11 animation helper for sliding the window
+-------------------------------------------------------------------------------
+function Prism.slide(obj, base, dy, dur, fade, closing, done)
+	local info = TweenInfo.new(dur, Enum.EasingStyle.Quart, if closing then Enum.EasingDirection.In else Enum.EasingDirection.Out)
+	obj.Position = if closing then base else base + UDim2.fromOffset(0, dy)
+	local t = tweenService:Create(obj, info, { Position = if closing then base + UDim2.fromOffset(0, dy) else base })
+	t.Completed:Connect(function(state)
+		if state == Enum.PlaybackState.Completed then
+			if closing and obj.Parent then
+				obj.Position = base
+			end
+			if done then
+				done()
+			end
+		end
+	end)
+	t:Play()
+end
+
+-------------------------------------------------------------------------------
+-- §12 demo menu
+-------------------------------------------------------------------------------
+local function demo()
+	local window = Prism.new()
+	Prism.uiMode = "Simple"
+
+	-- state store for the demo
+	local state = {
+		aimbot = false, teamCheck = true, smooth = 4, fov = 120, priority = "Closest",
+		silentAim = false, hitboxHead = true, hitboxBody = true,
+		esp = true, espNames = true, espBox = true, espHealth = true,
+		espColor = { 56, 214, 214 }, espTextColor = { 232, 236, 240 },
+		aimKey = "MouseButton2", menuKey = "RightShift",
+		theme = "Teal", rapidFire = false, rapidMult = 0.5,
+	}
+
+	-- Home ----------------------------------------------------------------
+	local homeTab = window.addTab("Home", { "Welcome" })
+	local homeGroup = Prism.group(homeTab.Welcome.L, "Welcome", { simple = true })
+	homeGroup:note("This is a demo of the Prism UI kit. Every control on the other tabs is fully wired — right-click any toggle to bind a key.", { color = Prism.C.ok })
+	homeGroup:info("Version", function()
+		return Prism.publicVersion
+	end)
+	homeGroup:info("Time", function()
+		return os.date("%H:%M:%S")
+	end)
+	homeGroup:button("Reset everything", function()
+		state.aimbot = false
+		state.silentAim = false
+		state.esp = true
+		state.rapidFire = false
+		print("prism: reset")
+	end, Prism.C.danger, { desc = "Puts every demo switch back to its default." })
+
+	local infoGroup = Prism.group(homeTab.Welcome.R, "About")
+	infoGroup:note("Prism is a UI kit only — it doesn't touch the game, doesn't read files, doesn't have a licence system. Add features in your own code and wire them to the controls.")
+
+	-- Combat --------------------------------------------------------------
+	local combatTab = window.addTab("Combat", { "Aimbot", "Triggerbot", "Weapon" })
+
+	local aimGroup = Prism.group(combatTab.Aimbot.L, "Aimbot", { simple = true })
+	aimGroup:toggle("Aimbot", "aimbot", {
+		desc = "Turns the camera toward the target while the aim key is held.",
+		state = function()
+			return state.aimbot
+		end,
+		onChange = function(v)
+			state.aimbot = v
+		end,
+		sub = function(sg)
+			sg:slider("Smoothing", "smooth", 1, 40, 1, {
+				fmt = function(n)
+					return tostring(math.floor(n))
+				end,
+				state = function()
+					return state.smooth
+				end,
+				onChange = function(v)
+					state.smooth = v
+				end,
+				desc = "1 snaps. 4–8 turns like a hand.",
+			})
+			sg:keybind("Aim key", "aimKey", {
+				state = function()
+					return state.aimKey
+				end,
+				onChange = function(v)
+					state.aimKey = v
+				end,
+			})
+		end,
+	})
+	aimGroup:toggle("Team check", "teamCheck", {
+		state = function()
+			return state.teamCheck
+		end,
+		onChange = function(v)
+			state.teamCheck = v
+		end,
+	})
+	aimGroup:slider("FOV radius", "fov", 20, 1000, 5, {
+		unit = "px",
+		fmt = function(n)
+			return tostring(math.floor(n))
+		end,
+		state = function()
+			return state.fov
+		end,
+		onChange = function(v)
+			state.fov = v
+		end,
+		desc = "The aimbot's circle on your screen.",
+	})
+
+	local targetGroup = Prism.group(combatTab.Aimbot.R, "Targeting")
+	targetGroup:cycle("Priority", "priority", { "Closest", "Crosshair", "LowestHP", "Threat" }, {
+		fmt = function(v)
+			return if v == "LowestHP" then "lowest hp" else string.lower(v)
+		end,
+		state = function()
+			return state.priority
+		end,
+		onChange = function(v)
+			state.priority = v
+		end,
+		desc = "Who gets picked when several enemies qualify.",
+	})
+
+	-- silent aim on the triggerbot tab
+	local silentGroup = Prism.group(combatTab.Triggerbot.L, "Silent aim", { simple = true })
+	silentGroup:toggle("Silent aim", "silentAim", {
+		desc = "Shots hit the target without moving your camera.",
+		state = function()
+			return state.silentAim
+		end,
+		onChange = function(v)
+			state.silentAim = v
+		end,
+	})
+	silentGroup:multiselect("Hitboxes", "silentHitboxes", { "Head", "Body", "Arms", "Legs" }, {
+		state = function()
+			return { Head = state.hitboxHead, Body = state.hitboxBody }
+		end,
+		onChange = function(opt, on)
+			if opt == "Head" then
+				state.hitboxHead = on
+			elseif opt == "Body" then
+				state.hitboxBody = on
+			end
+		end,
+	})
+
+	local triggerGroup = Prism.group(combatTab.Triggerbot.R, "Triggerbot", { simple = true })
+	triggerGroup:cycle("Mode", "triggerMode", { "Off", "Hold key", "Always" }, {
+		state = function()
+			return "Off"
+		end,
+		onChange = function() end,
+	})
+	triggerGroup:slider("Delay", "triggerDelay", 0, 500, 10, {
+		unit = "ms",
+		state = function()
+			return 90
+		end,
+		onChange = function() end,
+	})
+
+	-- weapon tab
+	local weaponGroup = Prism.group(combatTab.Weapon.L, "Weapon", { simple = true })
+	weaponGroup:toggle("Rapid fire", "rapidFire", {
+		state = function()
+			return state.rapidFire
+		end,
+		onChange = function(v)
+			state.rapidFire = v
+		end,
+	})
+	weaponGroup:slider("Fire speed", "rapidMult", 0.05, 1, 0.05, {
+		fmt = function(n)
+			return ("×%.2f"):format(n)
+		end,
+		state = function()
+			return state.rapidMult
+		end,
+		onChange = function(v)
+			state.rapidMult = v
+		end,
+	})
+	local weaponActions = Prism.group(combatTab.Weapon.R, "Actions")
+	weaponActions:button("Say hi in the console", function()
+		print("prism: hi")
+	end, Prism.C.accent)
+	weaponActions:button("Reset weapon settings", function()
+		state.rapidFire = false
+		state.rapidMult = 0.5
+	end)
+
+	-- Visuals -------------------------------------------------------------
+	local visualsTab = window.addTab("Visuals", { "ESP", "Colors" })
+	local espGroup = Prism.group(visualsTab.ESP.L, "ESP", { simple = true })
+	espGroup:toggle("ESP", "esp", {
+		state = function()
+			return state.esp
+		end,
+		onChange = function(v)
+			state.esp = v
+		end,
+	})
+	espGroup:toggle("Names", "espNames", {
+		state = function()
+			return state.espNames
+		end,
+		onChange = function(v)
+			state.espNames = v
+		end,
+	})
+	espGroup:toggle("Box", "espBox", {
+		state = function()
+			return state.espBox
+		end,
+		onChange = function(v)
+			state.espBox = v
+		end,
+	})
+	espGroup:toggle("Health bar", "espHealth", {
+		state = function()
+			return state.espHealth
+		end,
+		onChange = function(v)
+			state.espHealth = v
+		end,
+	})
+
+	local espStyleGroup = Prism.group(visualsTab.ESP.R, "Style")
+	espStyleGroup:cycle("Box style", "espBoxStyle", { "Corner", "Full", "3D" }, {
+		state = function()
+			return "Corner"
+		end,
+		onChange = function() end,
+	})
+	espStyleGroup:slider("Max distance", "espDistance", 100, 10000, 100, {
+		unit = "st",
+		state = function()
+			return 2000
+		end,
+		onChange = function() end,
+	})
+
+	local colorsGroup = Prism.group(visualsTab.Colors.L, "Colors", { simple = true })
+	colorsGroup:color("ESP color", "espColor", {
+		state = function()
+			return state.espColor
+		end,
+		onChange = function(c)
+			state.espColor = { math.floor(c.R * 255), math.floor(c.G * 255), math.floor(c.B * 255) }
+		end,
+	})
+
+	-- Config --------------------------------------------------------------
+	local configTab = window.addTab("Config", { "Settings" })
+	local settingsGroup = Prism.group(configTab.Settings.L, "Settings", { simple = true })
+	settingsGroup:keybind("Menu key", "menuKey", {
+		state = function()
+			return state.menuKey
+		end,
+		onChange = function(v)
+			state.menuKey = v
+		end,
+	})
+	settingsGroup:cycle("Mode", "uiMode", { "Simple", "Advanced" }, {
+		state = function()
+			return Prism.uiMode
+		end,
+		onChange = function(v)
+			Prism.uiMode = v
+			Prism.refilter()
+		end,
+		desc = "Simple hides fine-tuning rows. Advanced shows everything.",
+	})
+
+	local listGroup = Prism.group(configTab.Settings.R, "Configs")
+	local demoConfigs = { "Default", "Legit", "Rage", "Range" }
+	listGroup:list("Pick a config", {
+		height = 190,
+		placeholder = "search configs",
+		items = function()
+			local out = {}
+			for _, name in ipairs(demoConfigs) do
+				table.insert(out, { id = name, label = name, sub = "" })
+			end
+			return out
+		end,
+		selected = function()
+			return "Default"
+		end,
+		onSelect = function(id)
+			print("prism: selected", id)
+		end,
+	})
+
+	-- Debug ---------------------------------------------------------------
+	local debugTab = window.addTab("Debug", { "Readouts" })
+	local readoutGroup = Prism.group(debugTab.Readouts.L, "Readouts", { simple = true })
+	readoutGroup:info("FPS", function()
+		return tostring(math.floor(1 / math.max(runService.RenderStepped:Wait(), 1e-3)))
+	end)
+	readoutGroup:info("Place ID", function()
+		return tostring(game.PlaceId)
+	end)
+	readoutGroup:info("Player count", function()
+		return tostring(#playersService:GetPlayers())
+	end)
+
+	local debugActions = Prism.group(debugTab.Readouts.R, "Actions")
+	debugActions:button("Dump state to output", function()
+		print(httpService:JSONEncode(state))
+	end, Prism.C.accent)
+	debugActions:button("Clear output", function()
+		print("\n\n\n")
+	end)
+	debugActions:note("Right-click any toggle to set a key. Press Escape while the popup is open to clear the bind.")
+
+	-- window toggle keybind -----------------------------------------------
+	local toggleKey = "RightShift"
+	Prism.conn(userInputService.InputBegan:Connect(function(input, processed)
+		if processed then
+			return
+		end
+		if input.KeyCode.Name == toggleKey or (input.KeyCode == Enum.KeyCode.O and userInputService:IsKeyDown(Enum.KeyCode.LeftControl)) then
+			window.setVisible(not Prism.visible)
+		end
+	end))
+
+	return window
+end
+
+-------------------------------------------------------------------------------
+-- §13 entry point
+-------------------------------------------------------------------------------
+-- The demo runs when this file is executed directly (not required as a module).
+if not shared.PrismDemoLoaded then
+	shared.PrismDemoLoaded = true
+	pcall(demo)
+end
+
+return Prism
